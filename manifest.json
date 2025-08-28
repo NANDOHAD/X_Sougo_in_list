@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "X相互フォロワー取得ツール",
+  "version": "1.0",
+  "description": "Xの相互フォロワーを取得するChrome拡張機能",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "downloads",
+    "notifications"
+  ],
+  "host_permissions": [
+    "https://x.com/*",
+    "https://twitter.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "X相互フォロワー取得"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://x.com/*", "https://twitter.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}
