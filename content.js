@@ -11,6 +11,8 @@ class MutualFollowersExtractor {
     this.longPauseMs = 15000; // 長めの休止時間
     this.backoffMs = 30000; // エラー時のバックオフ初期値
     this.maxBackoffMs = 180000; // バックオフ上限
+    this.debug = false; // 詳細ログ切り替え
+    this.reloadAttempts = 0; // リロード回数ガード
   }
 
   // メッセージリスナー
@@ -29,6 +31,11 @@ class MutualFollowersExtractor {
   async extractMutualFollowers() {
     if (this.isRunning) {
       return { success: false, error: '既に実行中です' };
+    }
+
+    // フォロワーページ以外では中断
+    if (!(/\/followers\/?$/.test(location.pathname))) {
+      return { success: false, error: 'フォロワーページで実行してください' };
     }
 
     this.isRunning = true;
@@ -137,12 +144,13 @@ class MutualFollowersExtractor {
 
   // スクロールして追加ユーザーを取得（適応的バックオフ付き）
   async scrollAndExtract() {
-    let scrollCycle = 0;
+    let iterationCount = 0; // ループ回数
+    let heightStallCount = 0; // 高さが変わらない連続回数
     let lastHeight = document.body.scrollHeight;
     let noNewUsersCount = 0;
     let consecutiveNoNewUsers = 0;
 
-    while (scrollCycle < this.maxScrolls) {
+    while (iterationCount < this.maxScrolls) {
       // エラーバナー検知と復帰
       const recovered = await this.detectAndRecoverFromError();
       if (recovered === 'abort') {
@@ -167,16 +175,23 @@ class MutualFollowersExtractor {
         consecutiveNoNewUsers = 0;
       }
 
+      // 軽いバックオフ用のカウンタ
+      if (newUsersFound === 0) {
+        noNewUsersCount++;
+      } else {
+        noNewUsersCount = 0;
+      }
+
       const newHeight = document.body.scrollHeight;
       if (newHeight === lastHeight) {
-        scrollCycle++;
+        heightStallCount++;
       } else {
-        scrollCycle = 0;
+        heightStallCount = 0;
         lastHeight = newHeight;
       }
 
       // 進捗（処理したユーザー数とスクロール進捗を組み合わせて計算）
-      const scrollProgress = Math.min(80, Math.round((scrollCycle / this.maxScrolls) * 80)); // スクロール進捗: 0-80%
+      const scrollProgress = Math.min(80, Math.round((iterationCount / this.maxScrolls) * 80)); // スクロール進捗: 0-80%
       const userProgress = Math.min(20, Math.round((this.totalProcessedUsers / 1000) * 20)); // ユーザー処理進捗: 0-20%
       const totalProgress = Math.min(99, 20 + scrollProgress + userProgress); // 初期20% + スクロール80% + ユーザー処理20%
       
@@ -184,11 +199,11 @@ class MutualFollowersExtractor {
         phase: 'progress', 
         percent: totalProgress, 
         count: this.mutualFollowers.size, 
-        message: `スクロール${scrollCycle}回目: ${this.totalProcessedUsers}人処理済み、${this.mutualFollowers.size}人の相互フォロワーを発見` 
+        message: `スクロール${iterationCount}回目: ${this.totalProcessedUsers}人処理済み、${this.mutualFollowers.size}人の相互フォロワーを発見` 
       });
 
       // 定期的に長めの休止
-      if ((scrollCycle % this.longPauseEvery) === 0 && scrollCycle !== 0) {
+      if ((iterationCount % this.longPauseEvery) === 0 && iterationCount !== 0) {
         await this.sleep(this.longPauseMs);
       }
 
@@ -204,10 +219,7 @@ class MutualFollowersExtractor {
         noNewUsersCount = 0;
       }
 
-      // 実質末尾（高さ変化なく一定回数スクロール）と判断
-      if (scrollCycle >= this.maxScrolls - 1) {
-        break;
-      }
+      iterationCount++;
     }
   }
 
@@ -233,7 +245,11 @@ class MutualFollowersExtractor {
 
       const stillError = /問題が発生しました|Something went wrong/i.test(document.body.innerText || '');
       if (stillError) {
-        location.reload();
+        if (this.reloadAttempts < 2) {
+          this.reloadAttempts++;
+          location.reload();
+          return 'abort';
+        }
         return 'abort';
       }
 
@@ -287,21 +303,27 @@ class MutualFollowersExtractor {
       'a[data-testid="User-Name"]',
       'div[data-testid="User-Name"] a',
       'div[data-testid="UserName"] a',
-      'a[role="link"]',
-      'a[href*="/"]'
+      'a[href^="/"]'
     ];
+
+    const reserved = new Set([
+      '', 'home', 'explore', 'notifications', 'messages', 'i', 'settings', 'compose', 'search',
+      'topics', 'lists', 'bookmarks', 'moments', 'help', 'privacy', 'tos', 'about', 'login', 'signup'
+    ]);
 
     for (const selector of linkSelectors) {
       const links = element.querySelectorAll(selector);
       for (const link of links) {
-        const href = link.getAttribute('href');
-        if (href && href.startsWith('/') && !href.includes('/status/') && !href.includes('/photo/')) {
-          const username = href.split('/')[1];
-          if (username && username.length > 0 && !username.includes('?')) {
-            console.log('Found username from href:', username);
-            return username;
-          }
-        }
+        const href = link.getAttribute('href') || '';
+        if (!href.startsWith('/')) continue;
+
+        const match = href.match(/^\/([A-Za-z0-9_]{1,15})(?:\b|\/|\?|#)/);
+        if (!match) continue;
+        const candidate = match[1];
+        if (reserved.has(candidate)) continue;
+
+        if (this.debug) console.log('Found username from href:', candidate);
+        return candidate;
       }
     }
 
@@ -313,7 +335,7 @@ class MutualFollowersExtractor {
       return match[1];
     }
 
-    console.log('No username found in element');
+    if (this.debug) console.log('No username found in element');
     return null;
   }
 
@@ -329,21 +351,27 @@ class MutualFollowersExtractor {
     // デバッグ: 要素内のすべてのボタンとフォロー状態表示を確認
     const allButtons = element.querySelectorAll('button, div[role="button"], [data-testid*="follow"]');
     const followIndicators = element.querySelectorAll('[data-testid="userFollowIndicator"]');
-    console.log(`=== Analyzing user: ${username} ===`);
-    console.log(`Found ${allButtons.length} buttons in element`);
-    console.log(`Found ${followIndicators.length} follow indicators in element`);
-    
-    for (let i = 0; i < allButtons.length; i++) {
-      const button = allButtons[i];
-      const text = button.textContent || button.getAttribute('aria-label') || '';
-      const testId = button.getAttribute('data-testid') || '';
-      console.log(`Button ${i + 1}: text="${text}", data-testid="${testId}"`);
+    if (this.debug) {
+      console.log(`=== Analyzing user: ${username} ===`);
+      console.log(`Found ${allButtons.length} buttons in element`);
+      console.log(`Found ${followIndicators.length} follow indicators in element`);
     }
     
-    for (let i = 0; i < followIndicators.length; i++) {
-      const indicator = followIndicators[i];
-      const text = indicator.textContent || '';
-      console.log(`Follow indicator ${i + 1}: text="${text}"`);
+    if (this.debug) {
+      for (let i = 0; i < allButtons.length; i++) {
+        const button = allButtons[i];
+        const text = button.textContent || button.getAttribute('aria-label') || '';
+        const testId = button.getAttribute('data-testid') || '';
+        console.log(`Button ${i + 1}: text="${text}", data-testid="${testId}"`);
+      }
+    }
+    
+    if (this.debug) {
+      for (let i = 0; i < followIndicators.length; i++) {
+        const indicator = followIndicators[i];
+        const text = indicator.textContent || '';
+        console.log(`Follow indicator ${i + 1}: text="${text}"`);
+      }
     }
     
     // フォロー中ボタンを探す（相互フォロワー）
@@ -371,7 +399,7 @@ class MutualFollowersExtractor {
     for (const selector of followingSelectors) {
       const button = element.querySelector(selector);
       if (button) {
-        console.log('Found mutual follower (following):', username, 'with selector:', selector);
+        if (this.debug) console.log('Found mutual follower (following):', username, 'with selector:', selector);
         return true; // フォロー中 = 相互フォロワー
       }
     }
@@ -379,17 +407,17 @@ class MutualFollowersExtractor {
     // フォロー状態の表示要素も確認（相互フォロワーの場合のみ）
     for (const indicator of followIndicators) {
       const text = indicator.textContent || '';
-      if (/フォローされています|Following/i.test(text)) {
+      if (/フォローされています|Follows you/i.test(text)) {
         // 「フォローされています」の表示がある場合、さらに「フォロー中」ボタンがあるかチェック
         const hasFollowingButton = followingSelectors.some(selector => {
           return element.querySelector(selector) !== null;
         });
         
         if (hasFollowingButton) {
-          console.log('Found mutual follower (follow indicator + following button):', username, 'with text:', text);
+          if (this.debug) console.log('Found mutual follower (follow indicator + following button):', username, 'with text:', text);
           return true; // フォローされています + フォロー中 = 相互フォロワー
         } else {
-          console.log('Found one-way follower (follow indicator only):', username, 'with text:', text);
+          if (this.debug) console.log('Found one-way follower (follow indicator only):', username, 'with text:', text);
           return false; // フォローされていますのみ = 片方向フォロー
         }
       }
@@ -417,7 +445,7 @@ class MutualFollowersExtractor {
         const text = (button.textContent || button.getAttribute('aria-label') || '').toLowerCase();
         
         if (/フォローバック|follow back/i.test(text)) {
-          console.log('Found one-way follower (follow back):', username, 'with text:', text);
+          if (this.debug) console.log('Found one-way follower (follow back):', username, 'with text:', text);
           return false; // フォローバック = 片方向フォロー
         }
       }
@@ -434,19 +462,20 @@ class MutualFollowersExtractor {
       if (button) {
         const text = (button.textContent || button.getAttribute('aria-label') || '').toLowerCase();
         if (/フォロー|follow/i.test(text) && !/フォローバック|follow back/i.test(text)) {
-          console.log('Found non-following user:', username);
+          if (this.debug) console.log('Found non-following user:', username);
           return false; // フォローしていない
         }
       }
     }
 
     // デバッグ用：要素の内容をログ出力
-    console.log('User element analysis:', {
-      username: username,
-      elementText: element.textContent?.substring(0, 200)
-    });
-
-    console.log(`=== Result: ${username} is NOT a mutual follower ===`);
+    if (this.debug) {
+      console.log('User element analysis:', {
+        username: username,
+        elementText: element.textContent?.substring(0, 200)
+      });
+      console.log(`=== Result: ${username} is NOT a mutual follower ===`);
+    }
     return false;
   }
 
