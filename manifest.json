@@ -4,6 +4,7 @@
   "version": "1.0",
   "description": "Xの相互フォロワーを取得するChrome拡張機能",
   "permissions": [
+    "tabs",
     "activeTab",
     "storage",
     "downloads",
