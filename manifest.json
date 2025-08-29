@@ -2,13 +2,11 @@
   "manifest_version": 3,
   "name": "X相互フォロワー取得ツール",
   "version": "1.0",
-  "description": "Xの相互フォロワーを取得するChrome拡張機能",
+  "description": "Xのフォロワーページから相互フォロワーのみを抽出してJSONファイルに出力するChrome拡張機能",
   "permissions": [
-    "tabs",
     "activeTab",
     "storage",
-    "downloads",
-    "notifications"
+    "downloads"
   ],
   "host_permissions": [
     "https://x.com/*",
@@ -21,11 +19,7 @@
   "content_scripts": [
     {
       "matches": ["https://x.com/*", "https://twitter.com/*"],
-      "js": ["content.js"],
-      "run_at": "document_end"
+      "js": ["content.js"]
     }
-  ],
-  "background": {
-    "service_worker": "background.js"
-  }
+  ]
 }

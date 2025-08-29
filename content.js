@@ -1,30 +1,30 @@
-// 相互フォロワー取得のメインロジック
+// X相互フォロワー取得ツール - Content Script
 class MutualFollowersExtractor {
   constructor() {
     this.mutualFollowers = new Set();
-    this.processedUsernames = new Set(); // 処理済みユーザー名を追跡
+    this.processedUsernames = new Set();
     this.isRunning = false;
-    this.maxScrolls = 50;
-    this.scrollDelay = 2000; // 基本待機
-    this.jitterMs = 800; // ランダムゆらぎ
-    this.longPauseEvery = 8; // 何サイクルごとに長めの休止
-    this.longPauseMs = 15000; // 長めの休止時間
-    this.backoffMs = 30000; // エラー時のバックオフ初期値
-    this.maxBackoffMs = 180000; // バックオフ上限
-    this.debug = false; // 詳細ログ切り替え
-    this.reloadAttempts = 0; // リロード回数ガード
+    this.maxScrolls = 30;
+    this.scrollDelay = 1500;
   }
 
-  // メッセージリスナー
+  // メッセージリスナーの初期化
   init() {
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-      if (request.action === 'getMutualFollowers') {
+      console.log('Content script received message:', request);
+      
+      if (request.action === 'extractMutualFollowers') {
         this.extractMutualFollowers().then(result => {
+          console.log('Extraction completed:', result);
           sendResponse(result);
+        }).catch(error => {
+          console.error('Extraction error:', error);
+          sendResponse({ success: false, error: error.message });
         });
         return true; // 非同期レスポンス
       }
     });
+    console.log('Content script initialized');
   }
 
   // 相互フォロワー抽出のメイン処理
@@ -40,42 +40,21 @@ class MutualFollowersExtractor {
 
     this.isRunning = true;
     this.mutualFollowers.clear();
-    this.processedUsernames.clear(); // 処理済みユーザーリストもクリア
-    this.totalProcessedUsers = 0;
-    this.totalMutualFound = 0;
-
-    // 開始を通知
-    this.sendProgress({ phase: 'start', percent: 0, count: 0, message: '開始' });
+    this.processedUsernames.clear();
 
     try {
+      this.sendProgress(10, '初期化完了');
+
       // 初期表示ユーザーを取得
       await this.extractUsersFromCurrentPage();
-      this.sendProgress({ 
-        phase: 'progress', 
-        percent: Math.min(20, Math.round((this.totalProcessedUsers / 100) * 20)), 
-        count: this.mutualFollowers.size, 
-        message: `初期取得: ${this.totalProcessedUsers}人処理済み` 
-      });
+      this.sendProgress(30, `${this.mutualFollowers.size}人の相互フォロワーを発見`);
 
       // スクロールして追加ユーザーを取得
       await this.scrollAndExtract();
 
       const result = Array.from(this.mutualFollowers);
+      this.sendProgress(100, `完了: ${result.length}人の相互フォロワーを取得`);
 
-      // 完了を通知（100%）
-      this.sendProgress({ 
-        phase: 'done', 
-        percent: 100, 
-        count: result.length, 
-        message: `完了: ${this.totalProcessedUsers}人処理済み、${result.length}人の相互フォロワーを発見` 
-      });
-      
-      // バックグラウンドに完了を通知
-      this.sendTaskComplete({
-        mutualFollowers: result,
-        count: result.length
-      });
-      
       return {
         success: true,
         mutualFollowers: result,
@@ -83,19 +62,10 @@ class MutualFollowersExtractor {
       };
 
     } catch (error) {
-      this.sendProgress({ 
-        phase: 'error', 
-        percent: 0, 
-        count: this.mutualFollowers.size, 
-        message: error.message || 'エラー' 
-      });
-      
-      // バックグラウンドにエラーを通知
-      this.sendTaskError(error);
-      
+      console.error('Extraction error:', error);
       return {
         success: false,
-        error: error.message
+        error: error.message || '取得中にエラーが発生しました'
       };
     } finally {
       this.isRunning = false;
@@ -107,7 +77,6 @@ class MutualFollowersExtractor {
     const userElements = this.getUserElements();
     console.log(`Processing ${userElements.length} user elements`);
     
-    let processedCount = 0;
     let newUsersCount = 0;
     let mutualCount = 0;
     
@@ -123,7 +92,6 @@ class MutualFollowersExtractor {
       // 新しいユーザーとして記録
       this.processedUsernames.add(userInfo.username);
       newUsersCount++;
-      processedCount++;
       
       if (userInfo.isMutual) {
         this.mutualFollowers.add(userInfo.username);
@@ -132,137 +100,49 @@ class MutualFollowersExtractor {
       }
     }
     
-    // 累計処理ユーザー数を更新（重複を除いた実際の処理数）
-    this.totalProcessedUsers = this.processedUsernames.size;
-    this.totalMutualFound = this.mutualFollowers.size;
-    
-    console.log(`Processed ${processedCount} elements, found ${newUsersCount} new users, ${mutualCount} mutual followers`);
-    console.log(`Total: ${this.totalProcessedUsers} unique users processed, ${this.totalMutualFound} mutual followers found`);
-    
+    console.log(`Found ${newUsersCount} new users, ${mutualCount} mutual followers`);
     return { newUsersCount, mutualCount };
   }
 
-  // スクロールして追加ユーザーを取得（適応的バックオフ付き）
+  // スクロールして追加ユーザーを取得
   async scrollAndExtract() {
-    let iterationCount = 0; // ループ回数
-    let heightStallCount = 0; // 高さが変わらない連続回数
-    let lastHeight = document.body.scrollHeight;
+    let iterationCount = 0;
     let noNewUsersCount = 0;
-    let consecutiveNoNewUsers = 0;
 
     while (iterationCount < this.maxScrolls) {
-      // エラーバナー検知と復帰
-      const recovered = await this.detectAndRecoverFromError();
-      if (recovered === 'abort') {
-        break;
-      }
-
       const beforeCount = this.mutualFollowers.size;
-      const beforeTotalUsers = this.totalProcessedUsers;
+      
+      // スクロール
+      window.scrollBy({ top: window.innerHeight * 0.8, behavior: 'smooth' });
+      await this.sleep(this.scrollDelay);
 
-      // 小刻みスクロールで負荷軽減
-      const step = Math.floor(window.innerHeight * 0.8);
-      window.scrollBy({ top: step, behavior: 'smooth' });
-      await this.sleep(this.withJitter(this.scrollDelay));
-
+      // ユーザーを抽出
       const result = await this.extractUsersFromCurrentPage();
       const newUsersFound = result.newUsersCount;
 
       const afterCount = this.mutualFollowers.size;
       if (afterCount === beforeCount && newUsersFound === 0) {
-        consecutiveNoNewUsers++;
-      } else {
-        consecutiveNoNewUsers = 0;
-      }
-
-      // 軽いバックオフ用のカウンタ
-      if (newUsersFound === 0) {
         noNewUsersCount++;
       } else {
         noNewUsersCount = 0;
       }
 
-      const newHeight = document.body.scrollHeight;
-      if (newHeight === lastHeight) {
-        heightStallCount++;
-      } else {
-        heightStallCount = 0;
-        lastHeight = newHeight;
-      }
-
-      // 進捗（処理したユーザー数とスクロール進捗を組み合わせて計算）
-      const scrollProgress = Math.min(80, Math.round((iterationCount / this.maxScrolls) * 80)); // スクロール進捗: 0-80%
-      const userProgress = Math.min(20, Math.round((this.totalProcessedUsers / 1000) * 20)); // ユーザー処理進捗: 0-20%
-      const totalProgress = Math.min(99, 20 + scrollProgress + userProgress); // 初期20% + スクロール80% + ユーザー処理20%
-      
-      this.sendProgress({ 
-        phase: 'progress', 
-        percent: totalProgress, 
-        count: this.mutualFollowers.size, 
-        message: `スクロール${iterationCount}回目: ${this.totalProcessedUsers}人処理済み、${this.mutualFollowers.size}人の相互フォロワーを発見` 
-      });
-
-      // 定期的に長めの休止
-      if ((iterationCount % this.longPauseEvery) === 0 && iterationCount !== 0) {
-        await this.sleep(this.longPauseMs);
-      }
+      // 進捗更新
+      const progress = Math.min(90, 30 + Math.round((iterationCount / this.maxScrolls) * 60));
+      this.sendProgress(progress, `スクロール${iterationCount + 1}回目: ${this.mutualFollowers.size}人の相互フォロワーを発見`);
 
       // 新規ユーザーが連続で見つからない場合は早期終了
-      if (consecutiveNoNewUsers >= 3) {
-        console.log(`No new users found for ${consecutiveNoNewUsers} consecutive scrolls, ending extraction`);
+      if (noNewUsersCount >= 3) {
+        console.log(`No new users found for ${noNewUsersCount} consecutive scrolls, ending extraction`);
         break;
-      }
-
-      // しばらく新規が出ない場合は軽いバックオフ
-      if (noNewUsersCount >= 5) {
-        await this.sleep(this.withJitter(this.scrollDelay * 2));
-        noNewUsersCount = 0;
       }
 
       iterationCount++;
     }
   }
 
-  // エラーバナー検知と復帰処理
-  async detectAndRecoverFromError() {
-    const pageText = document.body.innerText || '';
-    const hasErrorText = /問題が発生しました|Something went wrong/i.test(pageText);
-
-    let alertEl = document.querySelector('[role="alert"], [data-testid="toast"]');
-    if (alertEl || hasErrorText) {
-      // 「やりなおす」「Retry」ボタンを探して押下
-      const retryBtn = Array.from(document.querySelectorAll('button, div[role="button"]'))
-        .find(el => /やりなおす|再読み込み|Retry|Reload/i.test(el.innerText || el.getAttribute('aria-label') || ''));
-
-      if (retryBtn) {
-        retryBtn.click();
-        await this.sleep(this.backoffMs);
-      } else {
-        await this.sleep(this.backoffMs);
-      }
-
-      this.backoffMs = Math.min(this.backoffMs * 1.5, this.maxBackoffMs);
-
-      const stillError = /問題が発生しました|Something went wrong/i.test(document.body.innerText || '');
-      if (stillError) {
-        if (this.reloadAttempts < 2) {
-          this.reloadAttempts++;
-          location.reload();
-          return 'abort';
-        }
-        return 'abort';
-      }
-
-      return 'recovered';
-    }
-
-    this.backoffMs = 30000;
-    return 'ok';
-  }
-
   // ユーザー要素を取得
   getUserElements() {
-    // フォロワーページに特化したセレクターを優先
     const selectors = [
       '[data-testid="cellInnerDiv"]',
       '[data-testid="UserCell"]',
@@ -278,7 +158,7 @@ class MutualFollowersExtractor {
       }
     }
 
-    console.log('No user elements found with any selector');
+    console.log('No user elements found');
     return [];
   }
 
@@ -322,7 +202,6 @@ class MutualFollowersExtractor {
         const candidate = match[1];
         if (reserved.has(candidate)) continue;
 
-        if (this.debug) console.log('Found username from href:', candidate);
         return candidate;
       }
     }
@@ -331,48 +210,15 @@ class MutualFollowersExtractor {
     const text = element.textContent;
     const match = text && text.match(/@(\w+)/);
     if (match) {
-      console.log('Found username from text:', match[1]);
       return match[1];
     }
 
-    if (this.debug) console.log('No username found in element');
     return null;
   }
 
-  // 相互フォロワーかどうかを判定
+  // 相互フォロワーかどうかを判定（既存のロジックを保持）
   isMutualFollower(element) {
-    // フォロワーページでの相互フォロー判定
-    // 「フォロー中」ボタンがあるユーザー = 相互フォロワー（既にフォローしている状態）
-    // 「フォローバック」ボタンがあるユーザー = 片方向フォロー（相手からフォローされているが、まだフォローしていない）
-    // 「フォロー」ボタンがあるユーザー = 相互フォローしていない
-    
     const username = this.extractUsername(element);
-    
-    // デバッグ: 要素内のすべてのボタンとフォロー状態表示を確認
-    const allButtons = element.querySelectorAll('button, div[role="button"], [data-testid*="follow"]');
-    const followIndicators = element.querySelectorAll('[data-testid="userFollowIndicator"]');
-    if (this.debug) {
-      console.log(`=== Analyzing user: ${username} ===`);
-      console.log(`Found ${allButtons.length} buttons in element`);
-      console.log(`Found ${followIndicators.length} follow indicators in element`);
-    }
-    
-    if (this.debug) {
-      for (let i = 0; i < allButtons.length; i++) {
-        const button = allButtons[i];
-        const text = button.textContent || button.getAttribute('aria-label') || '';
-        const testId = button.getAttribute('data-testid') || '';
-        console.log(`Button ${i + 1}: text="${text}", data-testid="${testId}"`);
-      }
-    }
-    
-    if (this.debug) {
-      for (let i = 0; i < followIndicators.length; i++) {
-        const indicator = followIndicators[i];
-        const text = indicator.textContent || '';
-        console.log(`Follow indicator ${i + 1}: text="${text}"`);
-      }
-    }
     
     // フォロー中ボタンを探す（相互フォロワー）
     const followingSelectors = [
@@ -387,11 +233,9 @@ class MutualFollowersExtractor {
       'div[data-testid="followButton"]',
       'div[data-testid="followButton"][aria-label*="フォロー中"]',
       'div[data-testid="followButton"][aria-label*="Following"]',
-      // 新しいセレクターを追加
       'button[data-testid*="-unfollow"]',
       'button[aria-label*="フォロー解除"]',
       'button[aria-label*="Unfollow"]',
-      // より具体的なセレクター
       'button[data-testid*="-unfollow"][aria-label*="フォロー中"]',
       'button[data-testid*="-unfollow"][aria-label*="Following"]'
     ];
@@ -399,12 +243,12 @@ class MutualFollowersExtractor {
     for (const selector of followingSelectors) {
       const button = element.querySelector(selector);
       if (button) {
-        if (this.debug) console.log('Found mutual follower (following):', username, 'with selector:', selector);
         return true; // フォロー中 = 相互フォロワー
       }
     }
     
-    // フォロー状態の表示要素も確認（相互フォロワーの場合のみ）
+    // フォロー状態の表示要素も確認
+    const followIndicators = element.querySelectorAll('[data-testid="userFollowIndicator"]');
     for (const indicator of followIndicators) {
       const text = indicator.textContent || '';
       if (/フォローされています|Follows you/i.test(text)) {
@@ -414,10 +258,8 @@ class MutualFollowersExtractor {
         });
         
         if (hasFollowingButton) {
-          if (this.debug) console.log('Found mutual follower (follow indicator + following button):', username, 'with text:', text);
           return true; // フォローされています + フォロー中 = 相互フォロワー
         } else {
-          if (this.debug) console.log('Found one-way follower (follow indicator only):', username, 'with text:', text);
           return false; // フォローされていますのみ = 片方向フォロー
         }
       }
@@ -433,7 +275,6 @@ class MutualFollowersExtractor {
       'div[data-testid="followButton"]',
       'div[data-testid="followButton"][aria-label*="フォローバック"]',
       'div[data-testid="followButton"][aria-label*="Follow back"]',
-      // 新しいセレクターを追加
       'button[data-testid*="-follow"]',
       'button[aria-label*="フォローバック"]',
       'button[aria-label*="Follow back"]'
@@ -445,78 +286,37 @@ class MutualFollowersExtractor {
         const text = (button.textContent || button.getAttribute('aria-label') || '').toLowerCase();
         
         if (/フォローバック|follow back/i.test(text)) {
-          if (this.debug) console.log('Found one-way follower (follow back):', username, 'with text:', text);
           return false; // フォローバック = 片方向フォロー
         }
       }
     }
 
-    // フォローしていない状態
-    const followSelectors = [
-      '[data-testid="follow"]',
-      'div[data-testid="follow"]'
-    ];
-
-    for (const selector of followSelectors) {
-      const button = element.querySelector(selector);
-      if (button) {
-        const text = (button.textContent || button.getAttribute('aria-label') || '').toLowerCase();
-        if (/フォロー|follow/i.test(text) && !/フォローバック|follow back/i.test(text)) {
-          if (this.debug) console.log('Found non-following user:', username);
-          return false; // フォローしていない
-        }
-      }
-    }
-
-    // デバッグ用：要素の内容をログ出力
-    if (this.debug) {
-      console.log('User element analysis:', {
-        username: username,
-        elementText: element.textContent?.substring(0, 200)
-      });
-      console.log(`=== Result: ${username} is NOT a mutual follower ===`);
-    }
     return false;
   }
 
   // 進捗メッセージ送信
-  sendProgress({ phase, percent, count, message }) {
-    try {
-      chrome.runtime.sendMessage({ type: 'progress', phase, percent, count, message });
-    } catch(_) {}
-  }
-
-  // タスク完了メッセージ送信
-  sendTaskComplete(result) {
+  sendProgress(percent, message) {
     try {
       chrome.runtime.sendMessage({ 
-        type: 'task_complete', 
-        mutualFollowers: result.mutualFollowers,
-        count: result.count
+        type: 'progress', 
+        percent: percent, 
+        message: message 
       });
-    } catch(_) {}
+    } catch(error) {
+      console.error('Error sending progress:', error);
+    }
   }
 
-  // エラーメッセージ送信
-  sendTaskError(error) {
-    try {
-      chrome.runtime.sendMessage({ 
-        type: 'task_error', 
-        message: error.message || 'エラーが発生しました'
-      });
-    } catch(_) {}
-  }
 
-  // 待機にランダムゆらぎを付与
-  withJitter(base) {
-    const delta = Math.floor((Math.random() - 0.5) * 2 * this.jitterMs);
-    return Math.max(500, base + delta);
-  }
 
   // スリープ関数
-  sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+  sleep(ms) { 
+    return new Promise(resolve => setTimeout(resolve, ms)); 
+  }
 }
 
 // 初期化
+console.log('Content script loading...');
 const extractor = new MutualFollowersExtractor();
 extractor.init();
+console.log('Content script ready');

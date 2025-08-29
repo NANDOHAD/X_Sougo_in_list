@@ -4,72 +4,104 @@
   <meta charset="utf-8">
   <style>
     body {
-      width: 280px;
-      padding: 12px;
+      width: 300px;
+      padding: 20px;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background-color: #15202b;
-      color: #ffffff;
     }
     .container {
-      background-color: #192734;
-      border-radius: 8px;
-      padding: 12px;
-    }
-    h3 {
-      margin: 0 0 12px 0;
-      color: #1da1f2;
-      font-size: 16px;
       text-align: center;
+    }
+    h1 {
+      font-size: 18px;
+      margin-bottom: 20px;
+      color: #1da1f2;
     }
     .status {
-      padding: 8px;
-      border-radius: 4px;
-      font-size: 12px;
-      margin-bottom: 12px;
-      text-align: center;
+      margin: 15px 0;
+      padding: 10px;
+      border-radius: 5px;
+      font-size: 14px;
     }
     .status.info {
-      background-color: #1e2a3a;
-      color: #1da1f2;
+      background-color: #e3f2fd;
+      color: #1976d2;
     }
     .status.success {
-      background-color: #1e3a2e;
-      color: #17bf63;
+      background-color: #e8f5e8;
+      color: #2e7d32;
     }
     .status.error {
-      background-color: #3a1e1e;
-      color: #e0245e;
+      background-color: #ffebee;
+      color: #c62828;
+    }
+    .progress {
+      margin: 15px 0;
+    }
+    .progress-bar {
+      width: 100%;
+      height: 20px;
+      background-color: #f0f0f0;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      background-color: #1da1f2;
+      transition: width 0.3s ease;
+      width: 0%;
+    }
+    .progress-text {
+      font-size: 12px;
+      margin-top: 5px;
+      color: #666;
     }
     button {
       width: 100%;
-      padding: 10px;
+      padding: 12px;
       background-color: #1da1f2;
       color: white;
       border: none;
-      border-radius: 6px;
+      border-radius: 5px;
+      font-size: 14px;
       cursor: pointer;
-      font-size: 13px;
-      font-weight: 600;
+      transition: background-color 0.3s;
     }
     button:hover {
-      background-color: #1a91da;
+      background-color: #1991db;
     }
     button:disabled {
-      background-color: #253341;
-      color: #8899a6;
+      background-color: #ccc;
       cursor: not-allowed;
+    }
+    .result {
+      margin-top: 15px;
+      padding: 10px;
+      background-color: #f5f5f5;
+      border-radius: 5px;
+      font-size: 12px;
     }
   </style>
 </head>
 <body>
   <div class="container">
-    <h3>X相互フォロワー取得</h3>
+    <h1>X相互フォロワー取得ツール</h1>
     
     <div id="status" class="status info">
       フォロワーページで実行してください
     </div>
     
-    <button id="startBtn" disabled>相互フォロワーを取得開始</button>
+    <div id="progress" class="progress" style="display: none;">
+      <div class="progress-bar">
+        <div id="progress-fill" class="progress-fill"></div>
+      </div>
+      <div id="progress-text" class="progress-text">準備中...</div>
+    </div>
+    
+    <button id="extractBtn">相互フォロワーを取得</button>
+    
+    <div id="result" class="result" style="display: none;">
+      <div id="result-text"></div>
+    </div>
   </div>
   
   <script src="popup.js"></script>
